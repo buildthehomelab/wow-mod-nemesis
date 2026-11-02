@@ -82,6 +82,22 @@ entries already in the file keep their numbers.
 A nemesis doesn't appear to a game master, so use `.gm off` to meet it. Rank 5 drops back to 4
 unless you're within 5 levels of your cap.
 
+## Patch Notes: Nemesis
+
+Category: World
+
+- Rares don't always stay dead. Killing one in the open world now has a small chance of making it
+  your **Nemesis**. It returns under a new name and hunts you, even across zones and continents.
+- A nemesis won't come for you in a capital, a town or an inn, or near guards. It waits nearby.
+- Each time you kill it, it comes back stronger and pays more gold, through five ranks: **Marked**,
+  **Hated**, **Relentless**, **Legendary** and **Mythic**.
+- If your nemesis kills you, it has had its revenge. The hunt is over, and your streak with it.
+- At **Mythic** it fights as an elite at your level cap. Beat it to end the hunt for good, with a
+  chance at a mount if no bots helped. It holds back until you are close to your level cap.
+
+> Nothing about a nemesis is on a timer you have to race. If you can't fight it now, reach a town
+> and it will wait.
+
 ## Uninstall
 
 Remove the module, rebuild, and run the two scripts in `data/sql/uninstall/` by hand.
