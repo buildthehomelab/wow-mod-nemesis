@@ -1,0 +1,221 @@
+[worldserver]
+
+###################################################################################################
+# mod-nemesis
+#
+# Killing an open-world rare can make it swear revenge on you. It comes back as a copy with a new
+# name and hunts you across zones and continents. Each time you kill it, it returns a rank
+# stronger. If it kills you it is over, and your streak with it. Kill it at the last rank and it
+# is gone for good, with the best reward.
+###################################################################################################
+
+#
+#    Nemesis.Enable
+#        Description: Turns the module on.
+#        Default:     1
+#
+
+Nemesis.Enable = 1
+
+#
+#    Nemesis.TriggerChance
+#        Description: Percent chance, per real player credited with a rare's kill, that the rare
+#                     swears revenge on them.
+#        Default:     5
+#
+
+Nemesis.TriggerChance = 5
+
+#
+#    Nemesis.TriggerMaxLevelsOver
+#        Description: A rare this many levels or more below the player can't swear revenge.
+#        Default:     10
+#
+
+Nemesis.TriggerMaxLevelsOver = 10
+
+#
+#    Nemesis.WaitMinMinutes
+#    Nemesis.WaitMaxMinutes
+#        Description: Time played before a nemesis sets out, after it is created or killed.
+#        Default:     30, 60
+#
+
+Nemesis.WaitMinMinutes = 30
+Nemesis.WaitMaxMinutes = 60
+
+#
+#    Nemesis.LostTrailSeconds
+#        Description: Time played before it sets out again after it lost you in a fight (vanish,
+#                     feign death, no way to reach you). If someone else killed it, it waits
+#                     Nemesis.WaitMinMinutes to Nemesis.WaitMaxMinutes instead, at the same rank.
+#        Default:     60
+#
+
+Nemesis.LostTrailSeconds = 60
+
+#
+#    Nemesis.TickSeconds
+#        Description: How often the hunts move on.
+#        Default:     5
+#
+
+Nemesis.TickSeconds = 5
+
+#
+#    Nemesis.Speed
+#        Description: Yards per second it travels towards you during a hunt. A little faster than
+#                     an epic ground mount (14).
+#        Default:     16
+#
+
+Nemesis.Speed = 16
+
+#
+#    Nemesis.ContinentSeconds
+#        Description: Time played it takes to follow you to another continent. It then starts
+#                     Nemesis.ContinentYards away from you.
+#        Default:     300, 400
+#
+
+Nemesis.ContinentSeconds = 300
+Nemesis.ContinentYards = 400
+
+#
+#    Nemesis.WarnYards
+#        Description: At this distance you get a warning that it is close.
+#        Default:     300
+#
+
+Nemesis.WarnYards = 300
+
+#
+#    Nemesis.AppearYards
+#        Description: At this distance it appears, as soon as the place and moment allow, at
+#                     Nemesis.SpawnYards from you.
+#        Default:     80, 35
+#
+
+Nemesis.AppearYards = 80
+Nemesis.SpawnYards = 35
+
+#
+#    Nemesis.LeashYards
+#        Description: When you get this far from it during a fight, it goes back to following.
+#        Default:     150
+#
+
+Nemesis.LeashYards = 150
+
+#
+#    Nemesis.GuardYards
+#        Description: It leaves a fight when a guard is this close to you or to it, and won't appear
+#                     with one this close to where it would stand (GuardYards + SpawnYards from you).
+#        Default:     60
+#
+
+Nemesis.GuardYards = 60
+
+#
+#    Nemesis.GuardNames
+#        Description: A creature counts as a guard when the core flags it as one, or when its
+#                     name holds one of these words and it isn't a monster (it belongs to the
+#                     Alliance or the Horde, or is friendly to the player). Comma separated.
+#        Default:     "Guard,Bruiser,Sentinel,Grunt,Peacekeeper,Deathguard,Defender,Warden"
+#
+
+Nemesis.GuardNames = "Guard,Bruiser,Sentinel,Grunt,Peacekeeper,Deathguard,Defender,Warden"
+
+#
+#    Nemesis.Rank1.Health ... Nemesis.Rank4.Damage
+#        Description: Ranks 1 to 4 fight at the player's level. These multiply what a normal
+#                     creature of that level has.
+#
+
+Nemesis.Rank1.Health = 1.5
+Nemesis.Rank1.Damage = 1.25
+Nemesis.Rank2.Health = 2.0
+Nemesis.Rank2.Damage = 1.5
+Nemesis.Rank3.Health = 2.5
+Nemesis.Rank3.Damage = 2.0
+Nemesis.Rank4.Health = 3.0
+Nemesis.Rank4.Damage = 2.5
+
+#
+#    Nemesis.Final.Health60 ... Nemesis.Final.Damage80
+#        Description: The last rank fights at the highest level the player can reach: their
+#                     progression phase's with mod-individual-progression (60, 70 or 80), the
+#                     server's otherwise. These multiply what a normal creature of that level has
+#                     at each cap, and are close to the median open-world elite's.
+#
+
+Nemesis.Final.Health60 = 5.0
+Nemesis.Final.Damage60 = 4.6
+Nemesis.Final.Health70 = 4.0
+Nemesis.Final.Damage70 = 2.0
+Nemesis.Final.Health80 = 5.0
+Nemesis.Final.Damage80 = 4.6
+
+#
+#    Nemesis.Final.HoldLevels
+#        Description: It stays at rank 4 until the player is within this many levels of that
+#                     highest level. Rank 4 kills keep paying meanwhile.
+#        Default:     5
+#
+
+Nemesis.Final.HoldLevels = 5
+
+#
+#    Nemesis.Scale.Rank1 ... Nemesis.Scale.Rank5
+#        Description: Size, as a multiple of the rare's own.
+#
+
+Nemesis.Scale.Rank1 = 1.2
+Nemesis.Scale.Rank2 = 1.3
+Nemesis.Scale.Rank3 = 1.4
+Nemesis.Scale.Rank4 = 1.5
+Nemesis.Scale.Rank5 = 1.6
+
+#
+#    Nemesis.Aura.Rank1 ... Nemesis.Aura.Rank5
+#        Description: Visual spells kept on it at each rank, comma separated. "" for none. They have
+#                     to be auras: a one-shot visual spell doesn't stay on a creature.
+#        Default:     Shield Level 1-3; Spirit Particles (purple) 28126; Shadowform (visual) 37816
+#
+
+Nemesis.Aura.Rank1 = "63130"
+Nemesis.Aura.Rank2 = "63131"
+Nemesis.Aura.Rank3 = "63132"
+Nemesis.Aura.Rank4 = "63132,28126"
+Nemesis.Aura.Rank5 = "63132,28126,37816"
+
+#
+#    Nemesis.GoldPerLevel
+#        Description: Copper for a kill, per player level and rank. The final kill counts double.
+#        Default:     200 (level 60: 1.2 gold at rank 1, 4.8 at rank 4, 12 at the end)
+#
+
+Nemesis.GoldPerLevel = 200
+
+#
+#    Nemesis.MountChance
+#        Description: Percent chance of the mount for finishing the last rank. Only the hunted
+#                     player rolls, and only when no bot had a part in the fight.
+#        Default:     25
+#
+
+Nemesis.MountChance = 25
+
+#
+#    Nemesis.Mount.Humanoid ... Nemesis.Mount.Other
+#        Description: The item for each creature type. 0, or an item the server doesn't have, means
+#                     no mount for that type.
+#
+
+Nemesis.Mount.Humanoid = 400989
+Nemesis.Mount.Undead = 402683
+Nemesis.Mount.Beast = 400406
+Nemesis.Mount.Demon = 400780
+Nemesis.Mount.Elemental = 401597
+Nemesis.Mount.Mechanical = 401947
+Nemesis.Mount.Other = 401502
