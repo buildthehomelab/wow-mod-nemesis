@@ -2,8 +2,13 @@
  * mod-nemesis: the creature itself, from the moment it appears in front of its target.
  *
  * It's a temporary summon with its own object, so nothing it gains here outlasts it: a new fight
- * starts from a new creature. Stats come from the level it fights at, not from the rare's, and it
- * fights with melee and its affixes alone: a rare's own spells are made for the rare's level.
+ * starts from a new creature. Stats come from the level it fights at, not from the rare's.
+ *
+ * Abilities come from its creature type, or a caster's set if the rare was a mage, and open up with
+ * rank. A rare's own spells are made for the rare's level, so these are stock NPC spells with their
+ * damage worked out from the creature's melee hit: they stay a threat at any level.
+ *
+ * While it fights it watches how it's being beaten, and hands the lesson to the hunt when it dies.
  *
  * Released under the MIT License.
  */
@@ -17,9 +22,12 @@
 #include "Player.h"
 #include "ScriptedCreature.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 
 #include <algorithm>
+#include <vector>
 
 using namespace Nemesis;
 
@@ -37,12 +45,75 @@ namespace
     constexpr uint32 NOT_ENGAGED_SECONDS = 3;
     constexpr uint32 BASE_ATTACK_MS = 2000;
 
+    constexpr uint32 FIRST_ABILITY_MS = 6000;
+    constexpr uint32 BETWEEN_ABILITIES_MS = 5000;
+    constexpr uint32 FAILED_ABILITY_MS = 2000;
+    constexpr float CHARGE_MIN_YARDS = 8.0f;
+    constexpr float CHARGE_MAX_YARDS = 25.0f;
+    constexpr float CHARGE_DAMAGE = 0.25f;          // of its melee hit, on top of the weapon damage
+    constexpr float SHORT_RANGE_YARDS = 10.0f;      // for what it does to everyone around it
+
+    // What it takes to learn from a fight.
+    constexpr uint32 LESSON_CONTROL_HITS = 2;
+    constexpr uint32 LESSON_APART_SECONDS = 10;
+    constexpr float LESSON_APART_SHARE = 0.4f;
+    constexpr float LESSON_SPELL_SHARE = 0.6f;
+    constexpr float LESSON_OUTLASTED_HEALTHS = 1.5f;
+
+    // Not snares: a Frostbolt's slow says more about the spell than about how the fight went.
+    uint64 const CONTROL_MECHANICS = (1ULL << MECHANIC_CHARM) | (1ULL << MECHANIC_DISORIENTED) | (1ULL << MECHANIC_FEAR)
+        | (1ULL << MECHANIC_ROOT) | (1ULL << MECHANIC_SLEEP) | (1ULL << MECHANIC_STUN)
+        | (1ULL << MECHANIC_FREEZE) | (1ULL << MECHANIC_KNOCKOUT) | (1ULL << MECHANIC_POLYMORPH)
+        | (1ULL << MECHANIC_BANISH) | (1ULL << MECHANIC_HORROR) | (1ULL << MECHANIC_SAPPED);
+
     uint32 const JUGGERNAUT_MECHANICS[] =
     {
-        MECHANIC_CHARM, MECHANIC_DISORIENTED, MECHANIC_FEAR, MECHANIC_ROOT, MECHANIC_SLEEP, MECHANIC_SNARE,
-        MECHANIC_STUN, MECHANIC_FREEZE, MECHANIC_KNOCKOUT, MECHANIC_POLYMORPH, MECHANIC_BANISH, MECHANIC_HORROR,
-        MECHANIC_SAPPED,
+        MECHANIC_DISORIENTED, MECHANIC_FEAR, MECHANIC_ROOT, MECHANIC_SLEEP, MECHANIC_SNARE, MECHANIC_STUN,
+        MECHANIC_FREEZE, MECHANIC_KNOCKOUT, MECHANIC_POLYMORPH, MECHANIC_BANISH, MECHANIC_HORROR, MECHANIC_SAPPED,
     };
+
+    enum AbilityKind : uint8
+    {
+        ABILITY_BOLT,       // a spell whose damage is ours to set
+        ABILITY_DOT,        // the same, per tick
+        ABILITY_CONTROL,    // no damage of its own: fear, slow, weaken
+        ABILITY_NEARBY,     // hits around itself
+        ABILITY_CHARGE,     // closes the gap
+    };
+
+    struct Ability
+    {
+        uint32 spell;
+        AbilityKind kind;
+        uint32 cooldownMs;
+        uint8 fromRank;
+    };
+
+    // The three spells of a kit open at ranks 1, 3 and 5.
+    std::vector<Ability> const KIT_FIGHTER = { { 16509, ABILITY_DOT, 18000, 1 }, { 22120, ABILITY_CHARGE, 15000, 3 }, { 9080, ABILITY_CONTROL, 20000, 5 } };
+    std::vector<Ability> const KIT_CASTER = { { 9053, ABILITY_BOLT, 8000, 1 }, { 12542, ABILITY_CONTROL, 30000, 3 }, { 12553, ABILITY_BOLT, 12000, 5 } };
+    std::vector<Ability> const KIT_UNDEAD = { { 9613, ABILITY_BOLT, 8000, 1 }, { 12542, ABILITY_CONTROL, 30000, 3 }, { 11639, ABILITY_DOT, 18000, 5 } };
+    std::vector<Ability> const KIT_BEAST = { { 13443, ABILITY_DOT, 18000, 1 }, { 22120, ABILITY_CHARGE, 15000, 3 }, { 14100, ABILITY_NEARBY, 30000, 5 } };
+    std::vector<Ability> const KIT_DEMON = { { 9613, ABILITY_BOLT, 8000, 1 }, { 11980, ABILITY_CONTROL, 25000, 3 }, { 12542, ABILITY_CONTROL, 30000, 5 } };
+    std::vector<Ability> const KIT_ELEMENTAL = { { 9532, ABILITY_BOLT, 8000, 1 }, { 12553, ABILITY_BOLT, 12000, 3 }, { 6524, ABILITY_NEARBY, 30000, 5 } };
+    std::vector<Ability> const KIT_MECHANICAL = { { 6660, ABILITY_BOLT, 6000, 1 }, { 22120, ABILITY_CHARGE, 15000, 3 }, { 6524, ABILITY_NEARBY, 30000, 5 } };
+    std::vector<Ability> const KIT_DRAGONKIN = { { 9053, ABILITY_BOLT, 8000, 1 }, { 22120, ABILITY_CHARGE, 15000, 3 }, { 14100, ABILITY_NEARBY, 30000, 5 } };
+    std::vector<Ability> const KIT_GIANT = { { 16509, ABILITY_DOT, 18000, 1 }, { 22120, ABILITY_CHARGE, 15000, 3 }, { 6524, ABILITY_NEARBY, 30000, 5 } };
+
+    std::vector<Ability> const& KitFor(Creature const* creature, bool caster)
+    {
+        switch (creature->GetCreatureTemplate()->type)
+        {
+            case CREATURE_TYPE_UNDEAD:     return KIT_UNDEAD;
+            case CREATURE_TYPE_BEAST:      return KIT_BEAST;
+            case CREATURE_TYPE_DEMON:      return KIT_DEMON;
+            case CREATURE_TYPE_ELEMENTAL:  return KIT_ELEMENTAL;
+            case CREATURE_TYPE_MECHANICAL: return KIT_MECHANICAL;
+            case CREATURE_TYPE_DRAGONKIN:  return KIT_DRAGONKIN;
+            case CREATURE_TYPE_GIANT:      return KIT_GIANT;
+            default:                       return caster ? KIT_CASTER : KIT_FIGHTER;
+        }
+    }
 
     char const* const TALK_ARRIVE[FINAL_RANK] =
     {
@@ -56,27 +127,29 @@ namespace
     char const* const TALK_DIE = "This... is not over... {}.";
     char const* const TALK_DIE_FINAL = "At last... you have... ended it... {}.";
 
+    // What it says when it comes back having learned something, by Lesson.
+    char const* const TALK_LESSON[LESSON_COUNT] =
+    {
+        "",
+        "Your magic won't save you this time, {}.",
+        "Your tricks won't hold me again, {}.",
+        "You won't run from me this time, {}.",
+        "Heal all you like, {}. I hit harder now.",
+    };
+
     // %s is the creature's name, which the client fills in.
     char const* const EMOTE_ARRIVE = "%s has tracked you down, {}!";
     char const* const EMOTE_WIN = "%s stands over {}. Its hunt is over.";
     char const* const EMOTE_DIE = "%s falls, its eyes still fixed on {}.";
     char const* const EMOTE_DIE_FINAL = "%s falls, and will not rise again.";
-
-    // Those with a voice yell; a beast or a machine can only be described.
-    bool CanTalk(Creature const* creature)
+    char const* const EMOTE_LESSON[LESSON_COUNT] =
     {
-        switch (creature->GetCreatureTemplate()->type)
-        {
-            case CREATURE_TYPE_HUMANOID:
-            case CREATURE_TYPE_UNDEAD:
-            case CREATURE_TYPE_DEMON:
-            case CREATURE_TYPE_DRAGONKIN:
-            case CREATURE_TYPE_GIANT:
-                return true;
-            default:
-                return false;
-        }
-    }
+        "",
+        "%s shrugs off the memory of your magic, {}.",
+        "%s has grown too wild to hold, {}.",
+        "%s comes at you faster than before, {}.",
+        "%s bears down on you harder than before, {}.",
+    };
 
     float HealthOf(Fight const& fight)
     {
@@ -107,6 +180,11 @@ struct npc_mod_nemesis : public ScriptedAI
         _fight = fight;
         _ready = true;
 
+        for (Ability const& ability : KitFor(me, fight.caster))
+            if (ability.fromRank <= fight.rank && sSpellMgr->GetSpellInfo(ability.spell))
+                _abilities.push_back({ ability, 0 });
+        _abilityTimer = FIRST_ABILITY_MS;
+
         ApplyAffixes();
         ApplyStats();
         KeepAuras();
@@ -116,15 +194,14 @@ struct npc_mod_nemesis : public ScriptedAI
 
         if (Player* owner = ObjectAccessor::GetPlayer(*me, fight.owner))
         {
-            Say(TALK_ARRIVE[fight.rank - 1], EMOTE_ARRIVE, owner);
+            if (fight.lesson != LESSON_NONE && fight.lesson < LESSON_COUNT)
+                Say(TALK_LESSON[fight.lesson], EMOTE_LESSON[fight.lesson], owner);
+            else
+                Say(TALK_ARRIVE[fight.rank - 1], EMOTE_ARRIVE, owner);
+
             AttackStart(owner);
             me->SetAssistanceTimer(0);
         }
-    }
-
-    void Finish(Player* owner)
-    {
-        Say(TALK_WIN, EMOTE_WIN, owner);
     }
 
     void DamageTaken(Unit* attacker, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask school) override
@@ -133,16 +210,28 @@ struct npc_mod_nemesis : public ScriptedAI
             if (Player* player = attacker->GetAffectingPlayer(); player && IsBot(player))
                 _botAssisted = true;
 
-        if ((_fight.affixes & AFFIX_SPELLWARD) && !(school & SPELL_SCHOOL_MASK_NORMAL))
+        bool spell = !(school & SPELL_SCHOOL_MASK_NORMAL);
+        if (spell && (_fight.affixes & AFFIX_SPELLWARD))
             damage = uint32(float(damage) * SPELLWARD_DAMAGE);
+
+        (spell ? _spellDamageTaken : _meleeDamageTaken) += damage;
     }
 
-    void DamageDealt(Unit* /*victim*/, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask /*school*/) override
+    void SpellHit(Unit* /*caster*/, SpellInfo const* spell) override
+    {
+        if (spell && (spell->GetAllEffectsMechanicMask() & CONTROL_MECHANICS))
+            ++_controlHits;
+    }
+
+    void DamageDealt(Unit* victim, uint32& damage, DamageEffectType /*type*/, SpellSchoolMask /*school*/) override
     {
         // Its rank's damage is in its stats (ApplyStats), so armor, block and shields count as
         // usual. Only this part changes during a fight, so it can't be.
         if ((_fight.affixes & AFFIX_ENRAGED) && me->HealthBelowPct(int32(ENRAGED_HEALTH_PCT)))
             damage = uint32(float(damage) * ENRAGED_DAMAGE);
+
+        if (victim && victim->GetGUID() == _fight.owner)
+            _dealtToOwner += damage;
 
         if ((_fight.affixes & AFFIX_VAMPIRIC) && damage && me->IsAlive())
             me->ModifyHealth(int32(float(damage) * VAMPIRIC_HEAL));
@@ -150,21 +239,23 @@ struct npc_mod_nemesis : public ScriptedAI
 
     void KilledUnit(Unit* victim) override
     {
-        if (victim->GetGUID() != _fight.owner)
+        // Dead already, and something it left behind finished the job: the corpse stays lootable.
+        if (!me->IsAlive() || victim->GetGUID() != _fight.owner)
             return;
 
         Player* owner = victim->ToPlayer();
         if (!owner)
             return;
 
-        Finish(owner);
-        OnNemesisWon(me, owner);
+        Say(TALK_WIN, EMOTE_WIN, owner);
+        OnNemesisWon(me, owner, _botAssisted, _fightSeconds);
         me->DespawnOrUnsummon(3s);
     }
 
     void JustDied(Unit* /*killer*/) override
     {
-        if (Player* owner = ObjectAccessor::GetPlayer(*me, _fight.owner))
+        Player* owner = ObjectAccessor::GetPlayer(*me, _fight.owner);
+        if (owner)
         {
             if (_fight.rank >= FINAL_RANK)
                 Say(TALK_DIE_FINAL, EMOTE_DIE_FINAL, owner);
@@ -172,7 +263,11 @@ struct npc_mod_nemesis : public ScriptedAI
                 Say(TALK_DIE, EMOTE_DIE, owner);
         }
 
-        OnNemesisDied(me, _fight.owner, _botAssisted);
+        FightReport report;
+        report.botAssisted = _botAssisted;
+        report.seconds = _fightSeconds;
+        report.lesson = LessonFrom(owner);
+        OnNemesisDied(me, _fight.owner, report);
     }
 
     void EnterEvadeMode(EvadeReason /*why*/) override
@@ -199,16 +294,136 @@ struct npc_mod_nemesis : public ScriptedAI
         if (!UpdateVictim())
             return;
 
+        for (Slot& slot : _abilities)
+            slot.readyInMs -= std::min(slot.readyInMs, diff);
+        _abilityTimer -= std::min(_abilityTimer, diff);
+
+        if (me->HasUnitState(UNIT_STATE_CASTING))
+            return;
+
+        if (!_abilityTimer)
+            UseAbility();
+
+        if (me->HasUnitState(UNIT_STATE_CASTING))
+            return;
+
         DoMeleeAttackIfReady();
     }
 
 private:
+    struct Slot
+    {
+        Ability ability;
+        uint32 readyInMs;
+    };
+
     void Say(char const* talk, char const* emote, Player* owner)
     {
-        if (CanTalk(me))
+        if (IsTalker(me))
             me->Yell(Acore::StringFormat(talk, owner->GetName()), LANG_UNIVERSAL);
         else
             me->TextEmote(Acore::StringFormat(emote, owner->GetName()));
+    }
+
+    // The first lesson of this fight that it hasn't learned yet.
+    Lesson LessonFrom(Player const* owner) const
+    {
+        uint32 spell = _spellDamageTaken;
+        uint32 total = spell + _meleeDamageTaken;
+
+        std::pair<Lesson, bool> const seen[] =
+        {
+            { LESSON_CONTROL, _controlHits >= LESSON_CONTROL_HITS },
+            { LESSON_KITED, _apartSeconds >= LESSON_APART_SECONDS && float(_apartSeconds) >= float(_fightSeconds) * LESSON_APART_SHARE },
+            { LESSON_MAGIC, total && float(spell) >= float(total) * LESSON_SPELL_SHARE },
+            { LESSON_OUTLASTED, owner && float(_dealtToOwner) >= float(owner->GetMaxHealth()) * LESSON_OUTLASTED_HEALTHS },
+        };
+
+        for (auto const& [lesson, happened] : seen)
+            if (happened && !(_fight.affixes & AffixOf(lesson)))
+                return lesson;
+
+        return LESSON_NONE;
+    }
+
+    void UseAbility()
+    {
+        Unit* victim = me->GetVictim();
+        if (!victim)
+            return;
+
+        // Its melee hit, as the stats have it: what its spells are measured against.
+        int32 hit = int32((me->GetFloatValue(UNIT_FIELD_MINDAMAGE) + me->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f);
+        float distance = me->GetDistance(victim);
+
+        for (Slot& slot : _abilities)
+        {
+            if (slot.readyInMs)
+                continue;
+
+            Ability const& ability = slot.ability;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(ability.spell);
+            if (!info || me->IsSpellProhibited(info->GetSchoolMask()))
+                continue;
+
+            SpellCastResult result = SPELL_CAST_OK;
+            switch (ability.kind)
+            {
+                case ABILITY_CHARGE:
+                    if (distance < CHARGE_MIN_YARDS || distance > CHARGE_MAX_YARDS)
+                        continue;
+                    result = me->CastCustomSpell(ability.spell, SPELLVALUE_BASE_POINT1, int32(float(hit) * CHARGE_DAMAGE), victim, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+                    break;
+                case ABILITY_NEARBY:
+                    if (distance > SHORT_RANGE_YARDS)
+                        continue;
+                    result = me->CastSpell(me, ability.spell, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+                    break;
+                case ABILITY_BOLT:
+                    if (distance > info->GetMaxRange(false))
+                        continue;
+                    result = me->CastCustomSpell(ability.spell, SPELLVALUE_BASE_POINT0, UnscaledDamage(info, float(hit) * config.abilityBoltDamage), victim, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+                    break;
+                case ABILITY_DOT:
+                    if (distance > info->GetMaxRange(false))
+                        continue;
+                    result = me->CastCustomSpell(ability.spell, SPELLVALUE_BASE_POINT0, UnscaledDamage(info, float(hit) * config.abilityDotDamage), victim, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+                    break;
+                case ABILITY_CONTROL:
+                    if (distance > info->GetMaxRange(false))
+                        continue;
+                    result = me->CastSpell(victim, ability.spell, TRIGGERED_IGNORE_POWER_AND_REAGENT_COST);
+                    break;
+            }
+
+            if (result == SPELL_CAST_OK)
+            {
+                slot.readyInMs = ability.cooldownMs;
+                _abilityTimer = BETWEEN_ABILITIES_MS;
+                return;
+            }
+
+            // Too close, say: the next one may still work.
+            slot.readyInMs = FAILED_ABILITY_MS;
+        }
+
+        _abilityTimer = FAILED_ABILITY_MS;
+    }
+
+    // Stock NPC spells scale with the caster's level on top of any value they're given
+    // (SpellEffectInfo::CalcValue), so the value goes in with that taken out again.
+    int32 UnscaledDamage(SpellInfo const* info, float wanted) const
+    {
+        if (info->SpellLevel && info->SpellLevel != me->GetLevel() && info->HasAttribute(SPELL_ATTR0_SCALES_WITH_CREATURE_LEVEL))
+        {
+            uint8 expansion = me->GetCreatureTemplate()->expansion;
+            float atLevel = sObjectMgr->GetCreatureBaseStats(me->GetLevel(), me->getClass())->BaseDamage[expansion];
+            float atSpellLevel = sObjectMgr->GetCreatureBaseStats(info->SpellLevel, me->getClass())->BaseDamage[expansion];
+            if (atLevel > 0.0f)
+                wanted *= atSpellLevel / atLevel;
+        }
+
+        return std::max<int32>(1, int32(wanted));
     }
 
     void ApplyStats()
@@ -312,7 +527,12 @@ private:
 
         // Nobody it can fight: vanish, feign death, or a target it could never start on.
         if (me->IsEngaged())
+        {
             _notEngagedSeconds = 0;
+            ++_fightSeconds;
+            if (Unit const* victim = me->GetVictim(); victim && !me->HasUnitState(UNIT_STATE_CASTING) && !me->IsWithinMeleeRange(victim))
+                ++_apartSeconds;
+        }
         else if (++_notEngagedSeconds >= NOT_ENGAGED_SECONDS)
             EnterEvadeMode(EVADE_REASON_NO_HOSTILES);
     }
@@ -324,6 +544,16 @@ private:
     uint32 _secondTimer = 0;
     uint32 _regenSeconds = 0;
     uint32 _notEngagedSeconds = 0;
+
+    std::vector<Slot> _abilities;
+    uint32 _abilityTimer = 0;
+
+    uint32 _fightSeconds = 0;
+    uint32 _apartSeconds = 0;
+    uint32 _controlHits = 0;
+    uint32 _spellDamageTaken = 0;
+    uint32 _meleeDamageTaken = 0;
+    uint32 _dealtToOwner = 0;
 };
 
 bool Nemesis::SetUpCreature(Creature* creature, Fight const& fight)
@@ -334,6 +564,21 @@ bool Nemesis::SetUpCreature(Creature* creature, Fight const& fight)
 
     ai->Begin(fight);
     return true;
+}
+
+bool Nemesis::IsTalker(Creature const* creature)
+{
+    switch (creature->GetCreatureTemplate()->type)
+    {
+        case CREATURE_TYPE_HUMANOID:
+        case CREATURE_TYPE_UNDEAD:
+        case CREATURE_TYPE_DEMON:
+        case CREATURE_TYPE_DRAGONKIN:
+        case CREATURE_TYPE_GIANT:
+            return true;
+        default:
+            return false;
+    }
 }
 
 void AddNemesisCreatureScripts()

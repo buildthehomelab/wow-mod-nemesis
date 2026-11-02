@@ -33,6 +33,29 @@ namespace Nemesis
         AFFIX_REGENERATING = 0x40,  // heals over time, even in a fight
     };
 
+    // What a nemesis took from a fight it lost. It comes back with the affix that answers it.
+    enum Lesson : uint8
+    {
+        LESSON_NONE,
+        LESSON_MAGIC,       // beaten mostly with spells: Spellward
+        LESSON_CONTROL,     // stunned, feared, rooted: Juggernaut
+        LESSON_KITED,       // kept out of reach: Swift
+        LESSON_OUTLASTED,   // dealt far more than the player's health, and it still lost: Savage
+        LESSON_COUNT,
+    };
+
+    constexpr uint32 AffixOf(Lesson lesson)
+    {
+        switch (lesson)
+        {
+            case LESSON_MAGIC:     return AFFIX_SPELLWARD;
+            case LESSON_CONTROL:   return AFFIX_JUGGERNAUT;
+            case LESSON_KITED:     return AFFIX_SWIFT;
+            case LESSON_OUTLASTED: return AFFIX_SAVAGE;
+            default:               return 0;
+        }
+    }
+
     struct Config
     {
         bool enabled = true;
@@ -45,7 +68,9 @@ namespace Nemesis
         float speed = 16.0f;
         uint32 continentSeconds = 300;
         float continentYards = 400.0f;
+        float farWarnYards = 800.0f;
         float warnYards = 300.0f;
+        uint32 warnSound = 8959;
         float appearYards = 80.0f;
         float spawnYards = 35.0f;
         float leashYards = 150.0f;
@@ -58,8 +83,14 @@ namespace Nemesis
         uint32 holdLevels = 5;
         std::array<float, FINAL_RANK> scale{};
         std::array<std::vector<uint32>, FINAL_RANK> auras;
+        float abilityBoltDamage = 1.3f;
+        float abilityDotDamage = 0.2f;
         uint32 goldPerLevel = 200;
+        uint32 finalAchievement = 0;
         float mountChance = 25.0f;
+        float mountChanceStep = 25.0f;
+        bool championEnabled = true;
+        uint32 championTitle = 0;
         uint32 mountHumanoid = 0;
         uint32 mountUndead = 0;
         uint32 mountBeast = 0;
@@ -78,6 +109,16 @@ namespace Nemesis
         uint8 rank = 1;
         uint32 affixes = 0;
         uint8 level = 1;
+        uint8 lesson = LESSON_NONE;
+        bool caster = false;
+    };
+
+    // How a fight the creature lost went.
+    struct FightReport
+    {
+        bool botAssisted = false;
+        uint32 seconds = 0;
+        Lesson lesson = LESSON_NONE;
     };
 
     void LoadConfig();
@@ -86,13 +127,16 @@ namespace Nemesis
 
     bool IsBot(Player const* player);
 
+    // Those with a voice yell; a beast or a machine can only be described.
+    bool IsTalker(Creature const* creature);
+
     // The highest level this player can reach now, which the last rank fights at.
     uint8 FinalLevelFor(Player const* player);
 
     // From the creature's AI, on its map's thread.
     bool SetUpCreature(Creature* creature, Fight const& fight);
-    void OnNemesisDied(Creature* creature, ObjectGuid owner, bool botAssisted);
-    void OnNemesisWon(Creature* creature, Player* owner);
+    void OnNemesisDied(Creature* creature, ObjectGuid owner, FightReport const& report);
+    void OnNemesisWon(Creature* creature, Player* owner, bool botAssisted, uint32 seconds);
     void OnNemesisLostTrail(Creature* creature, ObjectGuid owner);
 
     // For commands, on the world thread.
@@ -104,7 +148,9 @@ namespace Nemesis
         uint32 affixes = 0;
         uint32 waitSeconds = 0;
         bool engaged = false;
+        uint32 kills = 0;
         std::string name;
+        std::string direction;      // where it is from the player, when it's on the player's map
     };
 
     Status StatusOf(Player const* player);
@@ -114,10 +160,12 @@ namespace Nemesis
     bool SetRank(Player* player, uint8 rank);
     bool HuntNow(Player* player);
     bool ClearHunt(Player* player);
+    bool EndWeekNow();          // the next check settles the week
 }
 
 void AddNemesisScripts();
 void AddNemesisCreatureScripts();
 void AddNemesisCommandScripts();
+void AddNemesisChampionScripts();
 
 #endif

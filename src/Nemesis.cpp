@@ -9,12 +9,19 @@
  *                   few sums per hunt. Another continent takes a fixed time. It stops close to a
  *                   player it can't reach (a capital, a town, guards nearby, a dungeon, in the air)
  *                   and appears as soon as it can. All of it runs on time the player is online.
+ *                   The player is told where it's coming from as it closes in.
  *   the fight       a temporary summon (NemesisCreature.cpp). If the player runs too far or reaches
  *                   safety, the creature goes and the point carries on from where it stood.
+ *   what it learns  how it lost decides the affix it comes back with (spells, crowd control, kiting,
+ *                   out-healing it), and it says so when it arrives.
  *   how it ends     killed: gold, and it returns a rank stronger. Killed at the last rank: gone for
- *                   good, more gold, and a chance at a mount if no bot had a part in it. It kills
- *                   the player: gone for good, nothing. Killed by someone else: back later, at the
- *                   same rank.
+ *                   good, more gold, a Feat of Strength with a title, and a chance at a mount if
+ *                   no bot had a part in it. Each missed roll raises the account's next one. It
+ *                   kills the player: gone for good, nothing. Killed by someone else: back later,
+ *                   at the same rank.
+ *
+ * What happens to a hunt goes into characters table mod_nemesis_event, for tuning and for a
+ * leaderboard.
  *
  * Bots leave it alone through mod-rare-tracker, which goes by a creature's rare rank: the copies
  * have that rank, and that module needs no change for them. Without it, nothing stops a bot
@@ -27,6 +34,7 @@
  */
 
 #include "Nemesis.h"
+#include "AchievementMgr.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "Config.h"
@@ -52,6 +60,7 @@
 #include "TemporarySummon.h"
 #include "Tokenize.h"
 #include "World.h"
+#include "WorldPacket.h"
 #include "WorldScript.h"
 #include "WorldSession.h"
 
@@ -83,7 +92,23 @@ namespace
     constexpr uint32 PROGRESSION_TBC = 8;        // PROGRESSION_PRE_TBC in mod-individual-progression
     constexpr uint32 PROGRESSION_WOTLK = 13;     // PROGRESSION_TBC_TIER_5
     constexpr uint32 PROGRESSION_LAST = 18;
+
+#ifdef NEMESIS_HAS_CHALLENGES
     constexpr uint16 CHALLENGE_HARDCORE = 1;
+#endif
+
+    // mod_nemesis_event.event
+    enum HuntEvent : uint8
+    {
+        EVENT_STARTED = 1,      // a rare swore revenge
+        EVENT_APPEARED = 2,     // it found the player
+        EVENT_KILLED = 3,       // the player or their group killed it, and it will return
+        EVENT_FINISHED = 4,     // the player or their group killed it at the last rank
+        EVENT_WON = 5,          // it killed the player
+        EVENT_STOLEN = 6,       // someone else killed it
+        EVENT_MOUNT = 7,        // the player got the mount
+        EVENT_LEARNED = 8,      // it took a lesson from its death; affixes are what it comes back with
+    };
 
     struct Copies
     {
@@ -102,6 +127,9 @@ namespace
         float x = 0.0f;
         float y = 0.0f;
         uint32 createdAt = 0;
+        uint32 kills = 0;       // of this hunt: the streak
+        uint8 lesson = LESSON_NONE;     // what it learned last, until it has said so
+        uint32 learned = 0;     // affixes it took from a lesson, which stay
 
         // Not saved: a restart removes the creature, and the rest follows from where it stands.
         ObjectGuid creature;
@@ -111,7 +139,7 @@ namespace
         float lastY = 0.0f;
         uint32 transitSeconds = 0;
         uint32 spawnFails = 0;
-        bool warned = false;
+        uint8 warned = 0;       // 0 not yet, 1 from afar, 2 close
     };
 
     // Filled at startup and by a reload, both while the maps aren't updating.
@@ -121,6 +149,7 @@ namespace
     // nothing here should have to know whether that reaches back in.
     std::recursive_mutex huntsLock;
     std::unordered_map<uint32, Hunt> hunts;
+    std::unordered_map<uint32, uint32> mountMisses;     // account -> rolls missed since the last win
     uint32 tickTimer = 0;
 
     // The four continents. Other maps of the same kind exist (the Deeprun Tram) and aren't for this.
@@ -135,11 +164,61 @@ namespace
             ChatHandler(session).PSendSysMessage("|cffff4040Nemesis:|r {}", text);
     }
 
+    uint32 EntryOf(Hunt const& hunt);
+    std::string NameOf(Hunt const& hunt);
+
+    // Its name as the database wants it. Kept in the rows so a web page needs no world database.
+    std::string EscapedNameOf(Hunt const& hunt)
+    {
+        std::string name = NameOf(hunt);
+        CharacterDatabase.EscapeString(name);
+        return name;
+    }
+
     void SaveHunt(Hunt const& hunt)
     {
-        CharacterDatabase.Execute("REPLACE INTO mod_nemesis_hunt (guid, rare_entry, `rank`, affixes, wait_seconds, map, x, y, created_at) "
-            "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
-            hunt.guid, hunt.rareEntry, uint32(hunt.rank), hunt.affixes, hunt.waitSeconds, hunt.map, hunt.x, hunt.y, hunt.createdAt);
+        CharacterDatabase.Execute("REPLACE INTO mod_nemesis_hunt (guid, rare_entry, `rank`, affixes, wait_seconds, map, x, y, created_at, kills, lesson, learned, name) "
+            "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, '{}')",
+            hunt.guid, hunt.rareEntry, uint32(hunt.rank), hunt.affixes, hunt.waitSeconds, hunt.map, hunt.x, hunt.y, hunt.createdAt,
+            hunt.kills, uint32(hunt.lesson), hunt.learned, EscapedNameOf(hunt));
+    }
+
+    // Something that happened to a hunt, for tuning and for the leaderboard. Few enough to write each one.
+    void RecordEvent(HuntEvent event, Hunt const& hunt, uint32 playerLevel, bool bots, uint32 seconds)
+    {
+        CharacterDatabase.Execute("INSERT INTO mod_nemesis_event (at, guid, event, rare_entry, `rank`, streak, player_level, bots, seconds, affixes, name) "
+            "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, '{}')",
+            uint32(GameTime::GetGameTime().count()), hunt.guid, uint32(event), hunt.rareEntry, uint32(hunt.rank), hunt.kills, playerLevel,
+            bots ? 1 : 0, seconds, hunt.affixes, EscapedNameOf(hunt));
+
+        LOG_INFO("module", "mod-nemesis: event {} character {} rare {} rank {} streak {} level {} bots {} seconds {} affixes {}",
+            uint32(event), hunt.guid, hunt.rareEntry, uint32(hunt.rank), hunt.kills, playerLevel, bots ? 1 : 0, seconds, hunt.affixes);
+    }
+
+    // Where a point is from the player. In the world x runs north and y runs west.
+    std::string DirectionFrom(Player const* player, float x, float y)
+    {
+        static char const* const names[] = { "north", "northwest", "west", "southwest", "south", "southeast", "east", "northeast" };
+
+        float angle = std::atan2(y - player->GetPositionY(), x - player->GetPositionX());
+        if (angle < 0.0f)
+            angle += 2.0f * float(M_PI);
+
+        return names[uint32(std::lround(angle / (float(M_PI) / 4.0f))) % std::size(names)];
+    }
+
+    // Words only the hunted player gets, in the middle of the screen, from something not there yet.
+    void WhisperFrom(Player* player, std::string const& name, std::string const& text)
+    {
+        WorldPacket data;
+        ChatHandler::BuildChatPacket(data, CHAT_MSG_RAID_BOSS_WHISPER, LANG_UNIVERSAL, ObjectGuid::Empty, player->GetGUID(), text, 0, name, player->GetName());
+        player->SendDirectMessage(&data);
+    }
+
+    void Alarm(Player* player)
+    {
+        if (config.warnSound)
+            player->PlayDirectSound(config.warnSound, player);
     }
 
     void DeleteHunt(uint32 guid)
@@ -152,6 +231,7 @@ namespace
         return urand(config.waitMinSeconds, std::max(config.waitMinSeconds, config.waitMaxSeconds));
     }
 
+    // Random affixes up to what the rank has, plus what it learned: never more than its rank in all.
     void RollAffixes(Hunt& hunt)
     {
         static uint32 const all[] = { AFFIX_VAMPIRIC, AFFIX_SWIFT, AFFIX_JUGGERNAUT, AFFIX_SAVAGE, AFFIX_SPELLWARD, AFFIX_ENRAGED, AFFIX_REGENERATING };
@@ -164,6 +244,13 @@ namespace
                 ++result;
             return result;
         };
+
+        hunt.affixes |= hunt.learned;
+
+        // Random ones make way for lessons. Each pass looks at the first random one left.
+        for (uint32 affix : all)
+            if (count(hunt.affixes) > uint32(hunt.rank) && (hunt.affixes & affix) && !(hunt.learned & affix))
+                hunt.affixes &= ~affix;
 
         while (count(hunt.affixes) < wanted)
             hunt.affixes |= all[urand(0, std::size(all) - 1)];
@@ -309,13 +396,17 @@ namespace
         fight.rank = hunt.rank;
         fight.affixes = hunt.affixes;
         fight.level = hunt.rank >= FINAL_RANK ? FinalLevelFor(player) : player->GetLevel();
+        fight.lesson = hunt.lesson;
+        if (CreatureTemplate const* rare = sObjectMgr->GetCreatureTemplate(hunt.rareEntry))
+            fight.caster = rare->unit_class == CLASS_MAGE;
 
         // Before the set up: a creature that kills fast still has to find this hunt its own.
         hunt.creature = summon->GetGUID();
         hunt.map = player->GetMapId();
         hunt.x = x;
         hunt.y = y;
-        hunt.warned = false;
+        hunt.warned = 2;        // should it lose them, it doesn't announce itself all over again
+        hunt.lesson = LESSON_NONE;
         SaveHunt(hunt);
 
         if (!SetUpCreature(summon, fight))
@@ -326,7 +417,11 @@ namespace
             return;
         }
 
+        if (WorldSession* session = player->GetSession())
+            session->SendAreaTriggerMessage(Acore::StringFormat("{} has found you!", NameOf(hunt)));
+        Alarm(player);
         Tell(player, Acore::StringFormat("{}, rank {} {} ({}), has found you!", NameOf(hunt), uint32(hunt.rank), RankName(hunt.rank), AffixNames(hunt.affixes)));
+        RecordEvent(EVENT_APPEARED, hunt, player->GetLevel(), false, 0);
     }
 
     // The creature leaves the world and the hunt carries on from where it stood.
@@ -336,7 +431,6 @@ namespace
         hunt.map = creature->GetMapId();
         hunt.x = creature->GetPositionX();
         hunt.y = creature->GetPositionY();
-        hunt.warned = false;
         creature->DespawnOrUnsummon();
         SaveHunt(hunt);
     }
@@ -408,8 +502,10 @@ namespace
             hunt.waitSeconds -= std::min(hunt.waitSeconds, tickSeconds);
             if (!hunt.waitSeconds)
             {
-                hunt.warned = false;
-                Tell(player, Acore::StringFormat("{} has picked up your trail.", NameOf(hunt)));
+                hunt.warned = 0;
+                Tell(player, hunt.map == player->GetMapId()
+                    ? Acore::StringFormat("{} has picked up your trail, to the {}.", NameOf(hunt), DirectionFrom(player, hunt.x, hunt.y))
+                    : Acore::StringFormat("{} has picked up your trail. It is a long way off, for now.", NameOf(hunt)));
                 SaveHunt(hunt);
             }
             return true;
@@ -420,6 +516,7 @@ namespace
         if (hunt.rank >= FINAL_RANK && uint32(player->GetLevel()) + config.holdLevels < uint32(FinalLevelFor(player)))
         {
             hunt.rank = FINAL_RANK - 1;
+            RollAffixes(hunt);
             SaveHunt(hunt);
         }
 
@@ -445,19 +542,41 @@ namespace
             hunt.map = hunt.lastMap;
             hunt.x = hunt.lastX + std::cos(angle) * config.continentYards;
             hunt.y = hunt.lastY + std::sin(angle) * config.continentYards;
+            hunt.warned = 0;
             SaveHunt(hunt);
             return true;
         }
 
         float distance = std::hypot(hunt.lastX - hunt.x, hunt.lastY - hunt.y);
 
-        if (inWorld && !hunt.warned && distance <= config.warnYards)
+        // The player got away, by hearthstone say: the warnings start over when it nears them again.
+        if (hunt.warned && distance > config.farWarnYards)
+            hunt.warned = 0;
+
+        // The warnings in order, one a tick, and never on the tick it arrives.
+        if (inWorld && hunt.warned < 1 && distance <= config.farWarnYards)
         {
-            hunt.warned = true;
-            Tell(player, Acore::StringFormat("You feel watched. {} is close.", NameOf(hunt)));
+            hunt.warned = 1;
+            WhisperFrom(player, NameOf(hunt), Acore::StringFormat("I am coming for you, {}.", player->GetName()));
+            Tell(player, Acore::StringFormat("{} is on its way, from the {}.", NameOf(hunt), DirectionFrom(player, hunt.x, hunt.y)));
+            if (distance <= config.warnYards)
+                return true;
         }
 
-        if (distance <= config.appearYards)
+        if (inWorld && hunt.warned < 2 && distance <= config.warnYards)
+        {
+            hunt.warned = 2;
+            std::string direction = DirectionFrom(player, hunt.x, hunt.y);
+            if (WorldSession* session = player->GetSession())
+                session->SendAreaTriggerMessage(Acore::StringFormat("Something is coming from the {}.", direction));
+            Alarm(player);
+            Tell(player, Acore::StringFormat("You feel watched. {} is close, to the {}.", NameOf(hunt), direction));
+            StepTowards(hunt, hunt.lastX, hunt.lastY, distance, config.appearYards, float(tickSeconds));
+            return true;
+        }
+
+        // A little over: rounding can leave it a hair short of the mark, and there it would stay.
+        if (distance <= config.appearYards + 1.0f)
         {
             if (inWorld && CanAppear(player))
                 Appear(hunt, player);
@@ -491,6 +610,7 @@ namespace
 
         hunts[hunt.guid] = hunt;
         SaveHunt(hunt);
+        RecordEvent(EVENT_STARTED, hunt, player->GetLevel(), false, 0);
 
         Tell(player, Acore::StringFormat("{} isn't finished with you. It will come back for you, wherever you go.", NameOf(hunt)));
     }
@@ -583,7 +703,7 @@ namespace
         return spell && player->HasSpell(spell);
     }
 
-    void RollMount(Player* player, Creature* creature, bool botAssisted)
+    void RollMount(Player* player, Creature* creature, Hunt const& hunt, bool botAssisted, uint32 seconds)
     {
         uint32 itemEntry = MountItemFor(creature->GetCreatureTemplate()->type);
         ItemTemplate const* proto = itemEntry ? sObjectMgr->GetItemTemplate(itemEntry) : nullptr;
@@ -596,8 +716,23 @@ namespace
             return;
         }
 
-        if (OwnsMount(player, itemEntry, proto) || !roll_chance_f(config.mountChance))
+        if (OwnsMount(player, itemEntry, proto))
             return;
+
+        // Each miss raises the account's next roll, so it can't go on failing for ever.
+        uint32 account = player->GetSession()->GetAccountId();
+        uint32& misses = mountMisses[account];
+        if (!roll_chance_f(std::min(100.0f, config.mountChance + config.mountChanceStep * float(misses))))
+        {
+            ++misses;
+            CharacterDatabase.Execute("REPLACE INTO mod_nemesis_luck (account, misses) VALUES ({}, {})", account, misses);
+            Tell(player, "It leaves no trophy this time. The next one you finish will be more likely to.");
+            return;
+        }
+
+        misses = 0;
+        CharacterDatabase.Execute("DELETE FROM mod_nemesis_luck WHERE account = {}", account);
+        RecordEvent(EVENT_MOUNT, hunt, player->GetLevel(), false, seconds);
 
         ItemPosCountVec dest;
         bool stored = false;
@@ -623,7 +758,17 @@ namespace
         std::lock_guard<std::recursive_mutex> guard(huntsLock);
         hunts.clear();
 
-        if (QueryResult result = CharacterDatabase.Query("SELECT guid, rare_entry, `rank`, affixes, wait_seconds, map, x, y, created_at FROM mod_nemesis_hunt"))
+        mountMisses.clear();
+        if (QueryResult result = CharacterDatabase.Query("SELECT account, misses FROM mod_nemesis_luck"))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                mountMisses[fields[0].Get<uint32>()] = fields[1].Get<uint32>();
+            } while (result->NextRow());
+        }
+
+        if (QueryResult result = CharacterDatabase.Query("SELECT guid, rare_entry, `rank`, affixes, wait_seconds, map, x, y, created_at, kills, lesson, learned FROM mod_nemesis_hunt"))
         {
             do
             {
@@ -638,6 +783,9 @@ namespace
                 hunt.x = fields[6].Get<float>();
                 hunt.y = fields[7].Get<float>();
                 hunt.createdAt = fields[8].Get<uint32>();
+                hunt.kills = fields[9].Get<uint32>();
+                hunt.lesson = fields[10].Get<uint8>();
+                hunt.learned = fields[11].Get<uint32>();
                 hunts[hunt.guid] = hunt;
             } while (result->NextRow());
         }
@@ -675,7 +823,10 @@ void Nemesis::LoadConfig()
     config.speed = sConfigMgr->GetOption<float>("Nemesis.Speed", 16.0f);
     config.continentSeconds = sConfigMgr->GetOption<uint32>("Nemesis.ContinentSeconds", 300);
     config.continentYards = sConfigMgr->GetOption<float>("Nemesis.ContinentYards", 400.0f);
+    config.farWarnYards = sConfigMgr->GetOption<float>("Nemesis.FarWarnYards", 800.0f);
     config.warnYards = sConfigMgr->GetOption<float>("Nemesis.WarnYards", 300.0f);
+    config.farWarnYards = std::max(config.farWarnYards, config.warnYards);  // the warnings run far, then close
+    config.warnSound = sConfigMgr->GetOption<uint32>("Nemesis.WarnSound", 8959);
     config.appearYards = sConfigMgr->GetOption<float>("Nemesis.AppearYards", 80.0f);
     config.spawnYards = sConfigMgr->GetOption<float>("Nemesis.SpawnYards", 35.0f);
     config.leashYards = sConfigMgr->GetOption<float>("Nemesis.LeashYards", 150.0f);
@@ -712,8 +863,14 @@ void Nemesis::LoadConfig()
                 auras.push_back(*spell);    // Not checked: at startup the spells aren't loaded yet.
     }
 
+    config.abilityBoltDamage = sConfigMgr->GetOption<float>("Nemesis.AbilityBoltDamage", 1.3f);
+    config.abilityDotDamage = sConfigMgr->GetOption<float>("Nemesis.AbilityDotDamage", 0.2f);
     config.goldPerLevel = sConfigMgr->GetOption<uint32>("Nemesis.GoldPerLevel", 200);
+    config.finalAchievement = sConfigMgr->GetOption<uint32>("Nemesis.Final.Achievement", 9510);
     config.mountChance = sConfigMgr->GetOption<float>("Nemesis.MountChance", 25.0f);
+    config.mountChanceStep = sConfigMgr->GetOption<float>("Nemesis.MountChanceStep", 25.0f);
+    config.championEnabled = sConfigMgr->GetOption<bool>("Nemesis.Champion.Enable", true);
+    config.championTitle = sConfigMgr->GetOption<uint32>("Nemesis.Champion.Title", 192);
     config.mountHumanoid = sConfigMgr->GetOption<uint32>("Nemesis.Mount.Humanoid", 0);
     config.mountUndead = sConfigMgr->GetOption<uint32>("Nemesis.Mount.Undead", 0);
     config.mountBeast = sConfigMgr->GetOption<uint32>("Nemesis.Mount.Beast", 0);
@@ -762,7 +919,7 @@ uint8 Nemesis::FinalLevelFor(Player const* player)
     return uint8(std::max<uint32>(cap, player->GetLevel()));
 }
 
-void Nemesis::OnNemesisDied(Creature* creature, ObjectGuid owner, bool botAssisted)
+void Nemesis::OnNemesisDied(Creature* creature, ObjectGuid owner, FightReport const& report)
 {
     std::lock_guard<std::recursive_mutex> guard(huntsLock);
 
@@ -775,7 +932,7 @@ void Nemesis::OnNemesisDied(Creature* creature, ObjectGuid owner, bool botAssist
     hunt.map = creature->GetMapId();
     hunt.x = creature->GetPositionX();
     hunt.y = creature->GetPositionY();
-    hunt.warned = false;
+    hunt.warned = 0;
     hunt.waitSeconds = RandomWait();
 
     // Only the owner's own kill, or their group's, counts. The owner has to be on this map: this
@@ -789,22 +946,38 @@ void Nemesis::OnNemesisDied(Creature* creature, ObjectGuid owner, bool botAssist
     {
         if (player)
             Tell(player, Acore::StringFormat("Someone else cut {} down. It will be back for you.", NameOf(hunt)));
+        RecordEvent(EVENT_STOLEN, hunt, player ? player->GetLevel() : 0, report.botAssisted, report.seconds);
         SaveHunt(hunt);
         return;
     }
 
+    bool botAssisted = report.botAssisted;
     bool final = hunt.rank >= FINAL_RANK;
+    ++hunt.kills;
     uint32 gold = config.goldPerLevel * uint32(player->GetLevel()) * uint32(hunt.rank) * (final ? 2 : 1);
     if (gold)
         player->ModifyMoney(int32(gold));
 
     if (final)
     {
-        Tell(player, Acore::StringFormat("{} is dead, for good. The hunt is over.", NameOf(hunt)));
-        RollMount(player, creature, botAssisted);
+        Tell(player, Acore::StringFormat("{} is dead, for good. The hunt is over, after {} kills.", NameOf(hunt), hunt.kills));
+        RecordEvent(EVENT_FINISHED, hunt, player->GetLevel(), botAssisted, report.seconds);
+
+        if (AchievementEntry const* achievement = config.finalAchievement ? sAchievementStore.LookupEntry(config.finalAchievement) : nullptr)
+            player->CompletedAchievement(achievement);
+
+        RollMount(player, creature, hunt, botAssisted, report.seconds);
         DeleteHunt(hunt.guid);
         hunts.erase(itr);
         return;
+    }
+
+    RecordEvent(EVENT_KILLED, hunt, player->GetLevel(), botAssisted, report.seconds);
+
+    if (report.lesson != LESSON_NONE)
+    {
+        hunt.lesson = report.lesson;
+        hunt.learned |= AffixOf(report.lesson);
     }
 
     std::string name = NameOf(hunt);
@@ -814,14 +987,20 @@ void Nemesis::OnNemesisDied(Creature* creature, ObjectGuid owner, bool botAssist
     else
     {
         ++hunt.rank;
-        RollAffixes(hunt);
         Tell(player, Acore::StringFormat("{} falls, but it isn't finished. It will return at rank {} {}.", name, uint32(hunt.rank), RankName(hunt.rank)));
+    }
+
+    RollAffixes(hunt);
+    if (report.lesson != LESSON_NONE)
+    {
+        Tell(player, Acore::StringFormat("It will remember how you fought: it comes back {}.", AffixNames(AffixOf(report.lesson))));
+        RecordEvent(EVENT_LEARNED, hunt, player->GetLevel(), botAssisted, report.seconds);
     }
 
     SaveHunt(hunt);
 }
 
-void Nemesis::OnNemesisWon(Creature* creature, Player* owner)
+void Nemesis::OnNemesisWon(Creature* creature, Player* owner, bool botAssisted, uint32 seconds)
 {
     std::lock_guard<std::recursive_mutex> guard(huntsLock);
 
@@ -829,7 +1008,9 @@ void Nemesis::OnNemesisWon(Creature* creature, Player* owner)
     if (itr == hunts.end() || itr->second.creature != creature->GetGUID())
         return;
 
-    Tell(owner, Acore::StringFormat("{} has had its revenge and hunts you no more. Your streak ends at rank {}.", NameOf(itr->second), uint32(itr->second.rank)));
+    Tell(owner, Acore::StringFormat("{} has had its revenge and hunts you no more. Your streak ends at rank {}, after {} kills.",
+        NameOf(itr->second), uint32(itr->second.rank), itr->second.kills));
+    RecordEvent(EVENT_WON, itr->second, owner->GetLevel(), botAssisted, seconds);
     DeleteHunt(itr->first);
     hunts.erase(itr);
 }
@@ -847,7 +1028,7 @@ void Nemesis::OnNemesisLostTrail(Creature* creature, ObjectGuid owner)
     hunt.map = creature->GetMapId();
     hunt.x = creature->GetPositionX();
     hunt.y = creature->GetPositionY();
-    hunt.warned = false;
+    hunt.warned = 0;
     hunt.waitSeconds = config.lostTrailSeconds;
     SaveHunt(hunt);
 }
@@ -868,7 +1049,10 @@ Nemesis::Status Nemesis::StatusOf(Player const* player)
     status.affixes = hunt.affixes;
     status.waitSeconds = hunt.waitSeconds;
     status.engaged = !hunt.creature.IsEmpty();
+    status.kills = hunt.kills;
     status.name = NameOf(hunt);
+    if (!status.engaged && !hunt.waitSeconds && hunt.map == player->GetMapId())
+        status.direction = DirectionFrom(player, hunt.x, hunt.y);
     return status;
 }
 
@@ -939,9 +1123,9 @@ bool Nemesis::HuntNow(Player* player)
     Hunt& hunt = itr->second;
     hunt.waitSeconds = 0;
     hunt.transitSeconds = 0;
-    hunt.warned = false;
+    hunt.warned = 0;
     hunt.map = player->GetMapId();
-    hunt.x = player->GetPositionX() + config.warnYards;
+    hunt.x = player->GetPositionX() + config.warnYards + 100.0f;   // so all the warnings play out
     hunt.y = player->GetPositionY();
     return true;
 }

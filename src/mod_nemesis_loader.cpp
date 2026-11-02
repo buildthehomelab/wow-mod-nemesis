@@ -11,10 +11,12 @@
 void AddNemesisScripts();
 void AddNemesisCreatureScripts();
 void AddNemesisCommandScripts();
+void AddNemesisChampionScripts();
 
 void Addmod_nemesisScripts()
 {
     AddNemesisScripts();
     AddNemesisCreatureScripts();
     AddNemesisCommandScripts();
+    AddNemesisChampionScripts();
 }
