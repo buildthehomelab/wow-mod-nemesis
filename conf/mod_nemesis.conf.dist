@@ -82,12 +82,23 @@ Nemesis.ContinentSeconds = 300
 Nemesis.ContinentYards = 400
 
 #
+#    Nemesis.FarWarnYards
 #    Nemesis.WarnYards
-#        Description: At this distance you get a warning that it is close.
-#        Default:     300
+#        Description: At these distances you get a warning and the direction it's coming from:
+#                     a whisper from afar, then a message on screen with a sound when it's close.
+#        Default:     800, 300
 #
 
+Nemesis.FarWarnYards = 800
 Nemesis.WarnYards = 300
+
+#
+#    Nemesis.WarnSound
+#        Description: Sound when it's close and when it arrives. 0 for none.
+#        Default:     8959 (Raid Warning)
+#
+
+Nemesis.WarnSound = 8959
 
 #
 #    Nemesis.AppearYards
@@ -190,6 +201,17 @@ Nemesis.Aura.Rank4 = "63132,28126"
 Nemesis.Aura.Rank5 = "63132,28126,37816"
 
 #
+#    Nemesis.AbilityBoltDamage
+#    Nemesis.AbilityDotDamage
+#        Description: Damage of its spells, as a share of its average melee hit: per spell, and per
+#                     tick of those that hurt over time.
+#        Default:     1.3, 0.2
+#
+
+Nemesis.AbilityBoltDamage = 1.3
+Nemesis.AbilityDotDamage = 0.2
+
+#
 #    Nemesis.GoldPerLevel
 #        Description: Copper for a kill, per player level and rank. The final kill counts double.
 #        Default:     200 (level 60: 1.2 gold at rank 1, 4.8 at rank 4, 12 at the end)
@@ -198,13 +220,37 @@ Nemesis.Aura.Rank5 = "63132,28126,37816"
 Nemesis.GoldPerLevel = 200
 
 #
+#    Nemesis.Final.Achievement
+#        Description: Achievement for finishing the last rank: the Feat of Strength with the title.
+#                     It needs the rows of the client patch (see tools/build_patch.py). 0 for none.
+#        Default:     9510
+#
+
+Nemesis.Final.Achievement = 9510
+
+#
 #    Nemesis.MountChance
-#        Description: Percent chance of the mount for finishing the last rank. Only the hunted
-#                     player rolls, and only when no bot had a part in the fight.
-#        Default:     25
+#    Nemesis.MountChanceStep
+#        Description: Percent chance of the mount for finishing the last rank, and how much each
+#                     miss adds to the account's next roll. Only the hunted player rolls, and only
+#                     when no bot had a part in the fight.
+#        Default:     25, 25 (so the fourth roll can't miss)
 #
 
 Nemesis.MountChance = 25
+Nemesis.MountChanceStep = 25
+
+#
+#    Nemesis.Champion.Enable
+#    Nemesis.Champion.Title
+#        Description: The weekly champion: whoever killed their nemesis most often since the last
+#                     weekly reset, in fights no bot had a part in, holds this title until the next
+#                     reset. The title needs the rows of the client patch (tools/build_patch.py).
+#        Default:     1, 192 ("the Nemesis Hunter")
+#
+
+Nemesis.Champion.Enable = 1
+Nemesis.Champion.Title = 192
 
 #
 #    Nemesis.Mount.Humanoid ... Nemesis.Mount.Other

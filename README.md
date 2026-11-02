@@ -4,8 +4,9 @@ Kill a rare out in the world, and there's a small chance it isn't finished with 
 
 It comes back as a copy of itself with a new name, "Hogger the Vengeful", bigger and wrapped in a
 visual aura, and it hunts you across zones and continents. Each time you kill it, it returns a rank
-stronger. If it kills you, it has had its revenge: the hunt is over and your streak with it. Kill it
-at the last rank and it's gone for good, with the best reward and a chance at a mount.
+stronger, having learned from how you beat it. If it kills you, it has had its revenge: the hunt is
+over and your streak with it. Kill it at the last rank and it's gone for good, with a title, the best
+reward and a chance at a mount.
 
 ## How it plays
 
@@ -31,19 +32,37 @@ at the last rank and it's gone for good, with the best reward and a chance at a 
 - **The last rank:** an elite at the highest level you can reach now: your progression phase's cap
   with mod-individual-progression (60, 70 or 80), the server's otherwise. It stays at rank 4 until
   you're within 5 levels of that cap, and rank 4 kills keep paying.
-- **Rewards:** the rare's own loot table and gold by level and rank. At the end: double gold and a
-  25% chance at a mount, chosen by creature type. Only the hunted player rolls for it, and only if
-  no bot was in the group or hit it at any point during the fight. Other real players can help.
+- **It learns:** how you beat it decides what it comes back with. Beaten mostly with spells, it
+  returns Spellward. Stunned, feared or rooted, Juggernaut. Kept out of reach, Swift. If it dealt
+  far more than your health and still lost, Savage. It tells you so when it arrives.
+- **It warns you:** you get the direction it's coming from when it picks up your trail, a whisper
+  from afar, and a message on screen with a sound when it's close.
+- **Rewards:** the rare's own loot table and gold by level and rank. At the end: double gold, the
+  Feat of Strength "Bane of the Undying" with its title, and a chance at a mount chosen by creature
+  type: 25%, and 25% more for each roll your account has missed. Only the hunted player gets the
+  Feat and rolls for the mount, and the roll only happens if no bot was in the group or hit it at
+  any point during the fight. Bots don't cost you the Feat. Other real players can help.
   A rare whose loot can drop a mount has copies with no loot at all, since a copy can be killed
   again and again.
 - **Someone else kills it:** nothing for you, and it comes back later at the same rank.
 - **Voices:** humanoids, undead, demons, dragonkin and giants yell at you by name. Beasts,
   elementals and machines get an emote.
 
+- **Weekly champion:** whoever kills their nemesis most often between weekly resets, in fights no
+  bot had a part in, is announced to the server and holds the title "the Nemesis Hunter" until the
+  next reset. Ties go to whoever got there first. The title moves at the reset, or at the next login
+  for anyone offline.
+
 Affixes: Vampiric, Swift, Juggernaut, Savage, Spellward, Enraged and Regenerating.
 
-A nemesis fights with melee and its affixes only. It doesn't use the rare's spells, which are made
-for the rare's own level.
+Abilities come from the creature type, or a caster's set if the rare was a mage, and open at ranks
+1, 3 and 5: charges, fears, stuns, bolts and bleeds, with damage worked out from its melee hit so
+they stay a threat at any level. It doesn't use the rare's own spells, which are made for the rare's
+level.
+
+What happens to each hunt goes into the characters table `mod_nemesis_event` and the server log, for
+tuning: how often it triggers, what it learns, how far players get, how long fights last, and whether
+bots helped.
 
 ## Install
 
@@ -55,7 +74,9 @@ git clone https://github.com/buildthehomelab/wow-mod-nemesis.git mod-nemesis
 Rebuild the server. The SQL is applied on the next start. Then copy
 `conf/mod_nemesis.conf.dist` to your config folder as `mod_nemesis.conf` if you want to change it.
 
-No client patch is needed: the client asks the server for the names of new creature entries.
+The nemesis itself needs no client patch: the client asks the server for the names of new creature
+entries. The Feat and titles do: run `tools/build_patch.py` on your server's client patch, or set
+`Nemesis.Final.Achievement = 0` and `Nemesis.Champion.Title = 0`.
 
 **Bots:** with mod-playerbots, install [mod-rare-tracker](https://github.com/buildthehomelab/wow-mod-rare-tracker)
 with `RareTracker.BotsIgnoreRares = 1`. It keeps free-roaming bots off anything of rare rank, which
@@ -77,6 +98,7 @@ entries already in the file keep their numbers.
 | `.nemesis rank <rank>` | GM | sets its rank |
 | `.nemesis now` | GM | ends its wait and puts it a short way from you |
 | `.nemesis clear` | GM | ends your hunt |
+| `.nemesis endweek` | GM | settles the weekly champion within a minute |
 | `.nemesis reload` | admin | reads the config and the creature table again |
 
 A nemesis doesn't appear to a game master, so use `.gm off` to meet it. Rank 5 drops back to 4
@@ -91,9 +113,18 @@ Category: World
 - A nemesis won't come for you in a capital, a town or an inn, or near guards. It waits nearby.
 - Each time you kill it, it comes back stronger and pays more gold, through five ranks: **Marked**,
   **Hated**, **Relentless**, **Legendary** and **Mythic**.
+- It learns from how you beat it, and it comes back ready. Rely on spells and it returns
+  **Spellward**. Stun or fear it and it returns a **Juggernaut**. Kite it and it returns **Swift**.
+- It fights with abilities of its own: charges, fears, stuns, bolts and bleeds, more of them at
+  higher ranks.
+- You get a warning of the direction it's coming from as it closes in.
 - If your nemesis kills you, it has had its revenge. The hunt is over, and your streak with it.
-- At **Mythic** it fights as an elite at your level cap. Beat it to end the hunt for good, with a
-  chance at a mount if no bots helped. It holds back until you are close to your level cap.
+- At **Mythic** it fights as an elite at your level cap. Beat it to end the hunt for good and earn
+  the Feat of Strength **Bane of the Undying** and its title, with a chance at a mount if no bots
+  helped. Each time you miss the mount, your next chance improves. It holds back until you are
+  close to your level cap.
+- Each week, whoever kills their nemesis most often without bots earns the title
+  **the Nemesis Hunter** until the next weekly reset.
 
 > Nothing about a nemesis is on a timer you have to race. If you can't fight it now, reach a town
 > and it will wait.

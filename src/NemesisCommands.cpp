@@ -6,6 +6,7 @@
  *   .nemesis rank <rank>            (GM) sets your nemesis's rank
  *   .nemesis now                    (GM) ends its wait and puts it a short way from you
  *   .nemesis clear                  (GM) ends your hunt
+ *   .nemesis endweek                (GM) settles the weekly champion within a minute
  *   .nemesis reload                 (admin) reads the config and the creature table again
  *
  * A nemesis doesn't appear to a game master: use .gm off to meet it. Rank 5 drops back to 4 unless
@@ -38,6 +39,7 @@ public:
             { "rank",   HandleRank,   SEC_GAMEMASTER,    Console::No },
             { "now",    HandleNow,    SEC_GAMEMASTER,    Console::No },
             { "clear",  HandleClear,  SEC_GAMEMASTER,    Console::No },
+            { "endweek", HandleEndWeek, SEC_GAMEMASTER,  Console::No },
             { "reload", HandleReload, SEC_ADMINISTRATOR, Console::Yes },
         };
 
@@ -58,11 +60,13 @@ public:
             return true;
         }
 
-        handler->PSendSysMessage("{} hunts you: rank {} {} ({}).", status.name, uint32(status.rank), RankName(status.rank), AffixNames(status.affixes));
+        handler->PSendSysMessage("{} hunts you: rank {} {} ({}), {} kills so far.", status.name, uint32(status.rank), RankName(status.rank), AffixNames(status.affixes), status.kills);
         if (status.engaged)
             handler->PSendSysMessage("It has found you.");
         else if (status.waitSeconds)
             handler->PSendSysMessage("It is biding its time, for now.");
+        else if (!status.direction.empty())
+            handler->PSendSysMessage("It is on your trail, to the {}.", status.direction);
         else
             handler->PSendSysMessage("It is on your trail.");
         return true;
@@ -99,6 +103,15 @@ public:
             handler->PSendSysMessage("Hunt ended.");
         else
             handler->PSendSysMessage("You have no nemesis.");
+        return true;
+    }
+
+    static bool HandleEndWeek(ChatHandler* handler)
+    {
+        if (EndWeekNow())
+            handler->PSendSysMessage("The week ends now. The champion is settled within a minute, and the next one runs to the weekly reset.");
+        else
+            handler->PSendSysMessage("The weekly champion is turned off.");
         return true;
     }
 
